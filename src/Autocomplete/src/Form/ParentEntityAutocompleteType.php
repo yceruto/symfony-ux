@@ -11,64 +11,39 @@
 
 namespace Symfony\UX\Autocomplete\Form;
 
+use Symfony\Bridge\Doctrine\Form\Type\EntityType;
 use Symfony\Component\Form\AbstractType;
-use Symfony\Component\Form\DataMapperInterface;
 use Symfony\Component\Form\Exception\RuntimeException;
 use Symfony\Component\Form\FormBuilderInterface;
-use Symfony\Component\Form\FormInterface;
-use Symfony\Component\Form\FormView;
 use Symfony\Component\OptionsResolver\Options;
 use Symfony\Component\OptionsResolver\OptionsResolver;
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\UX\Autocomplete\Form\ChoiceList\Loader\ExtraLazyChoiceLoader;
 
 /**
  * All form types that want to expose autocomplete functionality should use this for its getParent().
  */
-final class ParentEntityAutocompleteType extends AbstractType implements DataMapperInterface
+final class ParentEntityAutocompleteType extends AbstractType
 {
     public function __construct(
-        private UrlGeneratorInterface $urlGenerator
+        private UrlGeneratorInterface $urlGenerator,
     ) {
     }
 
-    public function buildForm(FormBuilderInterface $builder, array $options)
+    public function buildForm(FormBuilderInterface $builder, array $options): void
     {
-        $formType = $builder->getType()->getInnerType();
-        $attribute = AsEntityAutocompleteField::getInstance($formType::class);
-
-        if (!$attribute && empty($options['autocomplete_url'])) {
-            throw new \LogicException(sprintf('You must either provide your own autocomplete_url, or add #[AsEntityAutocompleteField] attribute to %s.', $formType::class));
-        }
-
-        // Use the provided URL, or auto-generate from the provided alias
-        $autocompleteUrl = $options['autocomplete_url'] ?? $this->urlGenerator->generate($attribute->getRoute(), [
-            'alias' => $attribute->getAlias() ?: AsEntityAutocompleteField::shortName($formType::class),
-        ]);
-
-        $builder
-            ->addEventSubscriber(new AutocompleteEntityTypeSubscriber($autocompleteUrl))
-            ->setDataMapper($this);
+        $builder->setAttribute('autocomplete_url', $this->getAutocompleteUrl($builder, $options));
     }
 
-    public function finishView(FormView $view, FormInterface $form, array $options)
+    public function configureOptions(OptionsResolver $resolver): void
     {
-        // Add a custom block prefix to inner field to ease theming:
-        array_splice($view['autocomplete']->vars['block_prefixes'], -1, 0, 'ux_entity_autocomplete_inner');
-        // this IS A compound (i.e. has children) field
-        // however, we only render the child "autocomplete" field. So for rendering, fake NOT compound
-        // This is a hack and we should check into removing it in the future
-        $view->vars['compound'] = false;
-        // the above, unfortunately, can also trick other things that might use
-        // "compound" for other reasons. This, at least, leaves a hint.
-        $view->vars['compound_data'] = true;
-    }
+        $choiceLoader = static function (Options $options, $loader) {
+            return new ExtraLazyChoiceLoader($loader);
+        };
 
-    public function configureOptions(OptionsResolver $resolver)
-    {
         $resolver->setDefaults([
-            'multiple' => false,
-            // force display errors on this form field
-            'error_bubbling' => false,
+            'autocomplete' => true,
+            'choice_loader' => $choiceLoader,
             // set to the fields to search on or null to search on all fields
             'searchable_fields' => null,
             // override the search logic - set to a callable:
@@ -84,7 +59,6 @@ final class ParentEntityAutocompleteType extends AbstractType implements DataMap
             'max_results' => 10,
         ]);
 
-        $resolver->setRequired(['class']);
         $resolver->setAllowedTypes('security', ['boolean', 'string', 'callable']);
         $resolver->setAllowedTypes('max_results', ['int', 'null']);
         $resolver->setAllowedTypes('filter_query', ['callable', 'null']);
@@ -97,20 +71,29 @@ final class ParentEntityAutocompleteType extends AbstractType implements DataMap
         });
     }
 
-    public function getBlockPrefix(): string
+    public function getParent(): string
     {
-        return 'ux_entity_autocomplete';
+        return EntityType::class;
     }
 
-    public function mapDataToForms($data, $forms)
+    /**
+     * Uses the provided URL, or auto-generate from the provided alias
+     */
+    private function getAutocompleteUrl(FormBuilderInterface $builder, array $options): string
     {
-        $form = current(iterator_to_array($forms, false));
-        $form->setData($data);
-    }
+        if ($options['autocomplete_url']) {
+            return $options['autocomplete_url'];
+        }
 
-    public function mapFormsToData($forms, &$data)
-    {
-        $form = current(iterator_to_array($forms, false));
-        $data = $form->getData();
+        $formType = $builder->getType()->getInnerType();
+        $attribute = AsEntityAutocompleteField::getInstance($formType::class);
+
+        if (!$attribute) {
+            throw new \LogicException(sprintf('You must either provide your own autocomplete_url, or add #[AsEntityAutocompleteField] attribute to %s.', $formType::class));
+        }
+
+        return $this->urlGenerator->generate($attribute->getRoute(), [
+            'alias' => $attribute->getAlias() ?: AsEntityAutocompleteField::shortName($formType::class),
+        ]);
     }
 }
